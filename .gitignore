@@ -1,0 +1,35 @@
+# Build outputs
+/target/
+/out/
+/build/
+
+# Maven / Java
+*.class
+*.jar
+*.war
+*.ear
+hs_err_pid*
+replay_pid*
+
+# IDE - IntelliJ / JetBrains
+.idea/
+*.iml
+
+# IDE - Eclipse / VS Code (if used)
+.project
+.classpath
+.settings/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local runtime data
+textcon.db
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
