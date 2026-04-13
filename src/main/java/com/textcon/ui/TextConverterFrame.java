@@ -8,8 +8,11 @@ import com.textcon.util.FileExporter;
 import javax.swing.AbstractAction;
 import javax.swing.Action;
 import javax.swing.BorderFactory;
+import javax.swing.ButtonGroup;
 import javax.swing.InputMap;
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
+import javax.swing.JCheckBoxMenuItem;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
 import javax.swing.JFileChooser;
@@ -20,10 +23,13 @@ import javax.swing.JMenuBar;
 import javax.swing.JMenuItem;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
+import javax.swing.JRadioButtonMenuItem;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
+import javax.swing.JSpinner;
 import javax.swing.JTextArea;
 import javax.swing.KeyStroke;
+import javax.swing.SpinnerNumberModel;
 import javax.swing.Timer;
 import javax.swing.border.LineBorder;
 import javax.swing.border.TitledBorder;
@@ -35,10 +41,12 @@ import javax.swing.undo.CannotUndoException;
 import javax.swing.undo.UndoManager;
 import java.awt.BorderLayout;
 import java.awt.Color;
+import java.awt.Desktop;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GraphicsEnvironment;
+import java.awt.GridLayout;
 import java.awt.Insets;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
@@ -48,6 +56,8 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -56,18 +66,59 @@ public class TextConverterFrame extends JFrame {
     private static final Pattern BOLD_PATTERN = Pattern.compile("\\*\\*[^*]+\\*\\*|__[^_]+__");
     private static final Pattern ITALIC_PATTERN = Pattern.compile("(?<!\\*)\\*[^*]+\\*(?!\\*)|(?<!_)_[^_]+_(?!_)");
     private static final Pattern CODE_BLOCK_PATTERN = Pattern.compile("```[\\s\\S]*?```");
-    private static final Color APP_BG = new Color(16, 20, 28);
-    private static final Color PANEL_BG = new Color(24, 30, 42);
-    private static final Color INPUT_BG = new Color(22, 28, 39);
-    private static final Color OUTPUT_BG = new Color(20, 33, 46);
-    private static final Color TEXT_PRIMARY = new Color(229, 236, 249);
-    private static final Color TEXT_MUTED = new Color(163, 176, 200);
-    private static final Color ACCENT = new Color(59, 146, 255);
-    private static final Color BORDER = new Color(58, 72, 98);
+
+    private enum UiTheme {
+        DARK("Dark", new Color(16, 20, 28), new Color(24, 30, 42), new Color(22, 28, 39), new Color(20, 33, 46),
+                new Color(229, 236, 249), new Color(163, 176, 200), new Color(59, 146, 255), new Color(58, 72, 98),
+                new Color(34, 44, 62), new Color(70, 85, 116)),
+        LIGHT("Light", new Color(242, 245, 251), new Color(255, 255, 255), new Color(255, 255, 255), new Color(248, 251, 255),
+                new Color(22, 28, 40), new Color(98, 110, 130), new Color(43, 126, 228), new Color(188, 198, 216),
+                new Color(240, 245, 252), new Color(177, 191, 214)),
+        STEEL("Steel", new Color(31, 35, 44), new Color(41, 47, 59), new Color(37, 43, 54), new Color(35, 46, 61),
+                new Color(228, 235, 246), new Color(170, 182, 201), new Color(80, 158, 255), new Color(84, 97, 124),
+                new Color(52, 61, 79), new Color(88, 106, 141));
+
+        private final String label;
+        private final Color appBg;
+        private final Color panelBg;
+        private final Color inputBg;
+        private final Color outputBg;
+        private final Color textPrimary;
+        private final Color textMuted;
+        private final Color accent;
+        private final Color border;
+        private final Color buttonBg;
+        private final Color buttonBorder;
+
+        UiTheme(String label, Color appBg, Color panelBg, Color inputBg, Color outputBg, Color textPrimary, Color textMuted,
+                Color accent, Color border, Color buttonBg, Color buttonBorder) {
+            this.label = label;
+            this.appBg = appBg;
+            this.panelBg = panelBg;
+            this.inputBg = inputBg;
+            this.outputBg = outputBg;
+            this.textPrimary = textPrimary;
+            this.textMuted = textMuted;
+            this.accent = accent;
+            this.border = border;
+            this.buttonBg = buttonBg;
+            this.buttonBorder = buttonBorder;
+        }
+
+        private static UiTheme fromLabel(String label) {
+            for (UiTheme theme : values()) {
+                if (theme.label.equalsIgnoreCase(label)) {
+                    return theme;
+                }
+            }
+            return DARK;
+        }
+    }
 
     private final JTextArea inputArea = new JTextArea();
     private final JTextArea outputArea = new JTextArea();
     private final JComboBox<String> formatCombo = new JComboBox<>(new String[]{"WhatsApp", "Telegram", "Discord", "Slack", "PDF"});
+    private final JComboBox<String> exportThemeCombo = new JComboBox<>(new String[]{"Blue", "Classic", "Dark"});
     private final JLabel inputCountLabel = new JLabel("Chars: 0 | Words: 0");
     private final JLabel outputCountLabel = new JLabel("Chars: 0 | Words: 0");
     private final JLabel tagSummaryLabel = new JLabel("Found: 0 headings, 0 bold, 0 italic, 0 code blocks");
@@ -80,25 +131,42 @@ public class TextConverterFrame extends JFrame {
     private final UndoManager undoManager = new UndoManager();
     private final Timer debounceTimer;
 
+    private final List<JButton> actionButtons = new ArrayList<>();
+
+    private JPanel topBar;
+    private JPanel buttonBar;
+    private JPanel bottomBar;
+    private JPanel statusPanel;
+    private JPanel inputPanel;
+    private JPanel outputPanel;
+    private JPanel inputCounterPanel;
+    private JPanel outputCounterPanel;
+    private JPanel leftActionsPanel;
+    private JPanel rightActionsPanel;
+
     private boolean quickCopyEnabled;
+    private boolean saveHistoryOnCopy = true;
+    private boolean outputWrapEnabled = true;
+    private UiTheme currentUiTheme = UiTheme.DARK;
+    private File lastSaveDirectory = new File(System.getProperty("user.home"));
 
     public TextConverterFrame() {
         super("Markdown Text Converter");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        setSize(new Dimension(1080, 680));
-        setMinimumSize(new Dimension(900, 560));
+        setSize(new Dimension(1180, 720));
+        setMinimumSize(new Dimension(940, 600));
         setLocationRelativeTo(null);
 
-        debounceTimer = new Timer(300, e -> performConversion(false));
+        debounceTimer = new Timer(300, e -> performConversion());
         debounceTimer.setRepeats(false);
 
         initComponents();
         updateCountsAndTags();
+        performConversion();
     }
 
     private void initComponents() {
         setLayout(new BorderLayout(10, 10));
-        getContentPane().setBackground(APP_BG);
         setJMenuBar(buildMenuBar());
 
         Font editorFont = pickEditorFont();
@@ -110,12 +178,6 @@ public class TextConverterFrame extends JFrame {
         outputArea.setWrapStyleWord(true);
         inputArea.setMargin(new Insets(10, 12, 10, 12));
         outputArea.setMargin(new Insets(10, 12, 10, 12));
-        inputArea.setBackground(INPUT_BG);
-        outputArea.setBackground(OUTPUT_BG);
-        inputArea.setForeground(TEXT_PRIMARY);
-        outputArea.setForeground(TEXT_PRIMARY);
-        inputArea.setCaretColor(ACCENT);
-        outputArea.setCaretColor(ACCENT);
         inputArea.setSelectionColor(new Color(58, 118, 214));
         outputArea.setSelectionColor(new Color(58, 118, 214));
         inputArea.setSelectedTextColor(new Color(243, 248, 255));
@@ -139,36 +201,31 @@ public class TextConverterFrame extends JFrame {
                 onInputChanged();
             }
         });
-        formatCombo.addActionListener(e -> performConversion(false));
-        styleComboBox(formatCombo);
+        formatCombo.addActionListener(e -> performConversion());
+        exportThemeCombo.addActionListener(e -> updateStatus("Export theme: " + exportThemeCombo.getSelectedItem()));
 
-        JPanel topBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 8));
+        topBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 8));
         topBar.setBorder(BorderFactory.createEmptyBorder(2, 8, 0, 8));
-        topBar.setBackground(APP_BG);
         topBar.add(new JLabel("Target Format:"));
         topBar.add(formatCombo);
+        topBar.add(new JLabel("Export Theme:"));
+        topBar.add(exportThemeCombo);
         topBar.add(tagSummaryLabel);
-        setMutedText(tagSummaryLabel);
 
-        JSplitPane splitPane = new JSplitPane(
-                JSplitPane.HORIZONTAL_SPLIT,
-                createTextPanel("Markdown Input", inputArea, inputCountLabel),
-                createTextPanel("Converted Output", outputArea, outputCountLabel)
-        );
+        inputPanel = createTextPanel("Markdown Input", inputArea, inputCountLabel, true);
+        outputPanel = createTextPanel("Converted Output", outputArea, outputCountLabel, false);
+        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, inputPanel, outputPanel);
         splitPane.setResizeWeight(0.5);
-        splitPane.setBackground(APP_BG);
         splitPane.setBorder(BorderFactory.createEmptyBorder(2, 6, 2, 6));
 
-        JPanel bottomBar = new JPanel(new BorderLayout());
-        bottomBar.setBackground(APP_BG);
-        bottomBar.add(buildButtonBar(), BorderLayout.NORTH);
+        bottomBar = new JPanel(new BorderLayout());
+        buttonBar = buildButtonBar();
+        bottomBar.add(buttonBar, BorderLayout.NORTH);
 
-        JPanel statusPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        statusPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
         statusPanel.setBorder(BorderFactory.createEmptyBorder(4, 6, 6, 6));
-        statusPanel.setBackground(APP_BG);
         statusPanel.add(statusLabel);
         statusPanel.add(savedLocationLabel);
-        setMutedText(savedLocationLabel);
         bottomBar.add(statusPanel, BorderLayout.SOUTH);
 
         add(topBar, BorderLayout.NORTH);
@@ -176,100 +233,106 @@ public class TextConverterFrame extends JFrame {
         add(bottomBar, BorderLayout.SOUTH);
 
         bindShortcuts();
+        applyUiTheme(currentUiTheme);
     }
 
-    private JPanel createTextPanel(String title, JTextArea area, JLabel countLabel) {
+    private JPanel createTextPanel(String title, JTextArea area, JLabel countLabel, boolean isInputPanel) {
         JPanel panel = new JPanel(new BorderLayout(4, 4));
-        panel.setBackground(PANEL_BG);
-        TitledBorder titledBorder = BorderFactory.createTitledBorder(
-                new LineBorder(BORDER, 1, true),
-                title
-        );
-        titledBorder.setTitleColor(new Color(199, 212, 235));
-        titledBorder.setTitleFont(new Font("Segoe UI", Font.BOLD, 13));
-        panel.setBorder(titledBorder);
+        panel.setBorder(createPanelBorder(title, currentUiTheme));
 
         JScrollPane scrollPane = new JScrollPane(area);
-        scrollPane.setBorder(BorderFactory.createLineBorder(BORDER, 1));
-        scrollPane.getViewport().setBackground(area.getBackground());
+        scrollPane.setBorder(BorderFactory.createLineBorder(currentUiTheme.border, 1));
         panel.add(scrollPane, BorderLayout.CENTER);
 
         JPanel counterPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-        counterPanel.setBackground(PANEL_BG);
-        setMutedText(countLabel);
         counterPanel.add(countLabel);
         panel.add(counterPanel, BorderLayout.SOUTH);
+
+        if (isInputPanel) {
+            inputCounterPanel = counterPanel;
+        } else {
+            outputCounterPanel = counterPanel;
+        }
+
         return panel;
     }
 
     private JPanel buildButtonBar() {
         JPanel panel = new JPanel(new BorderLayout(8, 4));
         panel.setBorder(BorderFactory.createEmptyBorder(0, 8, 2, 8));
-        panel.setBackground(APP_BG);
 
-        JPanel leftActions = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
-        JPanel centerAction = new JPanel(new FlowLayout(FlowLayout.CENTER, 0, 0));
-        JPanel rightActions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 4));
-        leftActions.setBackground(APP_BG);
-        centerAction.setBackground(APP_BG);
-        rightActions.setBackground(APP_BG);
+        leftActionsPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        rightActionsPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 4));
 
-        JButton convertButton = new JButton("Convert");
         JButton copyButton = new JButton("Copy");
         JButton clearButton = new JButton("Clear");
-        JButton saveButton = new JButton("Save");
+        JButton saveButton = new JButton("Save As");
+        JButton savePdfButton = new JButton("Save As PDF");
+        JButton saveWordButton = new JButton("Save As Word");
+        JButton saveHtmlButton = new JButton("Save As HTML");
         JButton useOutputButton = new JButton("Use Output");
         JButton historyButton = new JButton("History");
 
-        convertButton.addActionListener(e -> performConversion(true));
         copyButton.addActionListener(e -> copyOutputToClipboard());
         clearButton.addActionListener(e -> clearAll());
-        saveButton.addActionListener(e -> saveOutput());
+        saveButton.addActionListener(e -> saveOutputAsDialog(null));
+        savePdfButton.addActionListener(e -> saveOutputAsDialog("PDF"));
+        saveWordButton.addActionListener(e -> saveOutputAsDialog("DOCX"));
+        saveHtmlButton.addActionListener(e -> saveOutputAsDialog("HTML"));
         useOutputButton.addActionListener(e -> loadOutputAsInput());
         historyButton.addActionListener(e -> openHistoryDialog());
 
-        stylePrimaryConvertButton(convertButton);
-        styleActionButton(copyButton);
-        styleActionButton(clearButton);
-        styleActionButton(saveButton);
-        styleActionButton(useOutputButton);
-        styleActionButton(historyButton);
+        addActionButton(copyButton);
+        addActionButton(clearButton);
+        addActionButton(saveButton);
+        addActionButton(savePdfButton);
+        addActionButton(saveWordButton);
+        addActionButton(saveHtmlButton);
+        addActionButton(useOutputButton);
+        addActionButton(historyButton);
 
-        leftActions.add(copyButton);
-        leftActions.add(clearButton);
-        leftActions.add(saveButton);
-        leftActions.add(useOutputButton);
+        leftActionsPanel.add(copyButton);
+        leftActionsPanel.add(clearButton);
+        leftActionsPanel.add(saveButton);
+        leftActionsPanel.add(savePdfButton);
+        leftActionsPanel.add(saveWordButton);
+        leftActionsPanel.add(saveHtmlButton);
+        leftActionsPanel.add(useOutputButton);
+        rightActionsPanel.add(historyButton);
 
-        centerAction.add(convertButton);
-
-        rightActions.add(historyButton);
-
-        panel.add(leftActions, BorderLayout.WEST);
-        panel.add(centerAction, BorderLayout.CENTER);
-        panel.add(rightActions, BorderLayout.EAST);
+        panel.add(leftActionsPanel, BorderLayout.WEST);
+        panel.add(rightActionsPanel, BorderLayout.EAST);
 
         return panel;
     }
 
     private JMenuBar buildMenuBar() {
         JMenuBar menuBar = new JMenuBar();
-        menuBar.setBackground(APP_BG);
         menuBar.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
 
         JMenu fileMenu = new JMenu("File");
         JMenuItem openItem = new JMenuItem("Open");
-        JMenuItem saveItem = new JMenuItem("Save");
+        JMenuItem saveItem = new JMenuItem("Save As");
+        JMenuItem savePdfItem = new JMenuItem("Save As PDF");
+        JMenuItem saveWordItem = new JMenuItem("Save As Word");
+        JMenuItem saveHtmlItem = new JMenuItem("Save As HTML");
         JMenuItem exitItem = new JMenuItem("Exit");
 
         openItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_O, InputEvent.CTRL_DOWN_MASK));
         saveItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_S, InputEvent.CTRL_DOWN_MASK));
 
         openItem.addActionListener(e -> openInputFile());
-        saveItem.addActionListener(e -> saveOutput());
+        saveItem.addActionListener(e -> saveOutputAsDialog(null));
+        savePdfItem.addActionListener(e -> saveOutputAsDialog("PDF"));
+        saveWordItem.addActionListener(e -> saveOutputAsDialog("DOCX"));
+        saveHtmlItem.addActionListener(e -> saveOutputAsDialog("HTML"));
         exitItem.addActionListener(e -> dispose());
 
         fileMenu.add(openItem);
         fileMenu.add(saveItem);
+        fileMenu.add(savePdfItem);
+        fileMenu.add(saveWordItem);
+        fileMenu.add(saveHtmlItem);
         fileMenu.addSeparator();
         fileMenu.add(exitItem);
 
@@ -279,16 +342,66 @@ public class TextConverterFrame extends JFrame {
         historyItem.addActionListener(e -> openHistoryDialog());
         viewMenu.add(historyItem);
 
+        JMenu toolsMenu = new JMenu("Tools");
+        JMenuItem saveToHistoryItem = new JMenuItem("Save Preview To History");
+        JMenuItem openLastFolderItem = new JMenuItem("Open Last Save Folder");
+        JMenuItem refreshItem = new JMenuItem("Refresh Preview");
+        saveToHistoryItem.addActionListener(e -> saveCurrentConversionToHistory("Preview saved to history"));
+        openLastFolderItem.addActionListener(e -> openLastSaveFolder());
+        refreshItem.addActionListener(e -> performConversion());
+        toolsMenu.add(saveToHistoryItem);
+        toolsMenu.add(openLastFolderItem);
+        toolsMenu.add(refreshItem);
+
+        JMenu settingsMenu = new JMenu("Settings");
+        JMenuItem preferencesItem = new JMenuItem("Preferences...");
+        preferencesItem.addActionListener(e -> openSettingsDialog());
+        settingsMenu.add(preferencesItem);
+        settingsMenu.addSeparator();
+
+        JMenu uiThemeMenu = new JMenu("App Theme");
+        ButtonGroup themeGroup = new ButtonGroup();
+        for (UiTheme theme : UiTheme.values()) {
+            JRadioButtonMenuItem themeItem = new JRadioButtonMenuItem(theme.label, theme == currentUiTheme);
+            themeItem.addActionListener(e -> {
+                currentUiTheme = theme;
+                applyUiTheme(theme);
+                updateStatus("App theme changed to " + theme.label);
+            });
+            themeGroup.add(themeItem);
+            uiThemeMenu.add(themeItem);
+        }
+        settingsMenu.add(uiThemeMenu);
+
+        JCheckBoxMenuItem historyOnCopyItem = new JCheckBoxMenuItem("Save Copied Output To History", saveHistoryOnCopy);
+        historyOnCopyItem.addActionListener(e -> {
+            saveHistoryOnCopy = historyOnCopyItem.isSelected();
+            updateStatus(saveHistoryOnCopy ? "History on copy enabled" : "History on copy disabled");
+        });
+        settingsMenu.add(historyOnCopyItem);
+
+        JMenu exportThemeMenu = new JMenu("Default Export Theme");
+        ButtonGroup exportThemeGroup = new ButtonGroup();
+        for (String label : new String[]{"Blue", "Classic", "Dark"}) {
+            JRadioButtonMenuItem themeItem = new JRadioButtonMenuItem(label, label.equals(exportThemeCombo.getSelectedItem()));
+            themeItem.addActionListener(e -> exportThemeCombo.setSelectedItem(label));
+            exportThemeGroup.add(themeItem);
+            exportThemeMenu.add(themeItem);
+        }
+        settingsMenu.add(exportThemeMenu);
+
         menuBar.add(fileMenu);
         menuBar.add(viewMenu);
+        menuBar.add(toolsMenu);
+        menuBar.add(settingsMenu);
         return menuBar;
     }
 
     private void bindShortcuts() {
-        bindAction("convert", KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.CTRL_DOWN_MASK), new AbstractAction() {
+        bindAction("save-as", KeyStroke.getKeyStroke(KeyEvent.VK_S, InputEvent.CTRL_DOWN_MASK), new AbstractAction() {
             @Override
             public void actionPerformed(java.awt.event.ActionEvent e) {
-                performConversion(true);
+                saveOutputAsDialog(null);
             }
         });
 
@@ -348,7 +461,7 @@ public class TextConverterFrame extends JFrame {
         debounceTimer.restart();
     }
 
-    private void performConversion(boolean saveToHistory) {
+    private void performConversion() {
         try {
             String original = inputArea.getText();
             String type = String.valueOf(formatCombo.getSelectedItem());
@@ -357,13 +470,7 @@ public class TextConverterFrame extends JFrame {
 
             updateCountsAndTags();
             quickCopyEnabled = !converted.isBlank();
-
-            if (saveToHistory) {
-                historyDAO.insertConversion(original, converted, type);
-                updateStatus("Converted to " + type + " and saved to history OK");
-            } else {
-                updateStatus("Preview updated (" + type + ")");
-            }
+            updateStatus("Preview updated (" + type + ")");
         } catch (Exception ex) {
             JOptionPane.showMessageDialog(this, ex.getMessage(), "Conversion Error", JOptionPane.ERROR_MESSAGE);
             updateStatus("Conversion failed");
@@ -394,7 +501,27 @@ public class TextConverterFrame extends JFrame {
         }
 
         Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(text), null);
-        updateStatus("Output copied to clipboard");
+        if (saveHistoryOnCopy) {
+            saveCurrentConversionToHistory("Output copied and saved to history");
+        } else {
+            updateStatus("Output copied to clipboard");
+        }
+    }
+
+    private void saveCurrentConversionToHistory(String successMessage) {
+        String original = inputArea.getText();
+        String converted = outputArea.getText();
+        if (converted == null || converted.isBlank()) {
+            updateStatus("No output available for history");
+            return;
+        }
+        try {
+            historyDAO.insertConversion(original, converted, String.valueOf(formatCombo.getSelectedItem()));
+            updateStatus(successMessage);
+        } catch (Exception ex) {
+            JOptionPane.showMessageDialog(this, ex.getMessage(), "History Save Failed", JOptionPane.ERROR_MESSAGE);
+            updateStatus("Failed to save history");
+        }
     }
 
     private void clearAll() {
@@ -406,16 +533,19 @@ public class TextConverterFrame extends JFrame {
     }
 
     private void openInputFile() {
-        JFileChooser chooser = new JFileChooser();
+        JFileChooser chooser = new JFileChooser(lastSaveDirectory);
         chooser.setDialogTitle("Open Markdown/Text File");
         chooser.setFileFilter(new FileNameExtensionFilter("Text/Markdown", "txt", "md", "markdown"));
 
         if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
             File file = chooser.getSelectedFile();
             try {
+                if (file.getParentFile() != null) {
+                    lastSaveDirectory = file.getParentFile();
+                }
                 String text = Files.readString(file.toPath(), StandardCharsets.UTF_8);
                 inputArea.setText(text);
-                performConversion(false);
+                performConversion();
                 updateStatus("Loaded file: " + file.getName());
             } catch (IOException ex) {
                 JOptionPane.showMessageDialog(this, ex.getMessage(), "Open Failed", JOptionPane.ERROR_MESSAGE);
@@ -424,7 +554,7 @@ public class TextConverterFrame extends JFrame {
         }
     }
 
-    private void saveOutput() {
+    private void saveOutputAsDialog(String preferredFormat) {
         String convertedText = outputArea.getText();
         String markdownText = inputArea.getText();
         if (convertedText == null || convertedText.isBlank()) {
@@ -433,39 +563,76 @@ public class TextConverterFrame extends JFrame {
         }
         String structuredSource = (markdownText == null || markdownText.isBlank()) ? convertedText : markdownText;
 
-        JFileChooser chooser = new JFileChooser();
+        JFileChooser chooser = new JFileChooser(lastSaveDirectory);
         FileNameExtensionFilter txtFilter = new FileNameExtensionFilter("Text File (*.txt)", "txt");
         FileNameExtensionFilter taggedTxtFilter = new FileNameExtensionFilter("Tagged Text File (*.txt)", "txt");
         FileNameExtensionFilter pdfFilter = new FileNameExtensionFilter("PDF File (*.pdf)", "pdf");
+        FileNameExtensionFilter wordFilter = new FileNameExtensionFilter("Word File (*.docx)", "docx");
+        FileNameExtensionFilter htmlFilter = new FileNameExtensionFilter("HTML File (*.html)", "html");
+        FileNameExtensionFilter jsonFilter = new FileNameExtensionFilter("JSON File (*.json)", "json");
+        FileNameExtensionFilter rtfFilter = new FileNameExtensionFilter("RTF File (*.rtf)", "rtf");
+        FileNameExtensionFilter mdFilter = new FileNameExtensionFilter("Markdown File (*.md)", "md");
 
-        chooser.setDialogTitle("Export Output");
+        chooser.setDialogTitle("Save As");
         chooser.addChoosableFileFilter(txtFilter);
         chooser.addChoosableFileFilter(taggedTxtFilter);
         chooser.addChoosableFileFilter(pdfFilter);
-        chooser.setFileFilter(txtFilter);
+        chooser.addChoosableFileFilter(wordFilter);
+        chooser.addChoosableFileFilter(htmlFilter);
+        chooser.addChoosableFileFilter(jsonFilter);
+        chooser.addChoosableFileFilter(rtfFilter);
+        chooser.addChoosableFileFilter(mdFilter);
+        chooser.setFileFilter(resolvePreferredFilter(
+                preferredFormat, txtFilter, taggedTxtFilter, pdfFilter, wordFilter, htmlFilter, jsonFilter, rtfFilter, mdFilter
+        ));
 
         if (chooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
             File selected = chooser.getSelectedFile();
             FileNameExtensionFilter chosenFilter = (FileNameExtensionFilter) chooser.getFileFilter();
+            if (selected.getParentFile() != null) {
+                lastSaveDirectory = selected.getParentFile();
+            }
 
             try {
                 if (chosenFilter == pdfFilter) {
                     File target = ensureExtension(selected, ".pdf");
-                    exporter.exportPDF(structuredSource, target);
-                    historyDAO.insertConversion(markdownText, convertedText, String.valueOf(formatCombo.getSelectedItem()), target.getAbsolutePath(), "PDF");
-                    savedLocationLabel.setText("Last saved: " + target.getAbsolutePath());
-                    updateStatus("Saved PDF with heading/code tags: " + target.getName());
+                    exporter.exportPDF(structuredSource, target, selectedExportTheme());
+                    saveHistoryExport(markdownText, convertedText, target, "PDF");
+                    updateStatus("Saved PDF: " + target.getName());
+                } else if (chosenFilter == wordFilter) {
+                    File target = ensureExtension(selected, ".docx");
+                    exporter.exportDOCX(structuredSource, target, selectedExportTheme());
+                    saveHistoryExport(markdownText, convertedText, target, "DOCX");
+                    updateStatus("Saved Word DOCX: " + target.getName());
+                } else if (chosenFilter == htmlFilter) {
+                    File target = ensureExtension(selected, ".html");
+                    exporter.exportHTML(structuredSource, target, selectedExportTheme());
+                    saveHistoryExport(markdownText, convertedText, target, "HTML");
+                    updateStatus("Saved HTML: " + target.getName());
+                } else if (chosenFilter == jsonFilter) {
+                    File target = ensureExtension(selected, ".json");
+                    exporter.exportJSON(markdownText, convertedText, String.valueOf(formatCombo.getSelectedItem()), target);
+                    saveHistoryExport(markdownText, convertedText, target, "JSON");
+                    updateStatus("Saved JSON: " + target.getName());
+                } else if (chosenFilter == rtfFilter) {
+                    File target = ensureExtension(selected, ".rtf");
+                    exporter.exportRTF(convertedText, target);
+                    saveHistoryExport(markdownText, convertedText, target, "RTF");
+                    updateStatus("Saved RTF: " + target.getName());
+                } else if (chosenFilter == mdFilter) {
+                    File target = ensureExtension(selected, ".md");
+                    exporter.exportMD(structuredSource, target);
+                    saveHistoryExport(markdownText, convertedText, target, "MD");
+                    updateStatus("Saved Markdown: " + target.getName());
                 } else if (chosenFilter == taggedTxtFilter) {
                     File target = ensureExtension(selected, ".txt");
                     exporter.exportTaggedTXT(structuredSource, target);
-                    historyDAO.insertConversion(markdownText, convertedText, String.valueOf(formatCombo.getSelectedItem()), target.getAbsolutePath(), "TAGGED_TXT");
-                    savedLocationLabel.setText("Last saved: " + target.getAbsolutePath());
-                    updateStatus("Saved tagged TXT (H/CODE/LI/P): " + target.getName());
+                    saveHistoryExport(markdownText, convertedText, target, "TAGGED_TXT");
+                    updateStatus("Saved tagged TXT: " + target.getName());
                 } else {
                     File target = ensureExtension(selected, ".txt");
                     exporter.exportTXT(convertedText, target);
-                    historyDAO.insertConversion(markdownText, convertedText, String.valueOf(formatCombo.getSelectedItem()), target.getAbsolutePath(), "TXT");
-                    savedLocationLabel.setText("Last saved: " + target.getAbsolutePath());
+                    saveHistoryExport(markdownText, convertedText, target, "TXT");
                     updateStatus("Saved TXT: " + target.getName());
                 }
             } catch (IOException ex) {
@@ -473,6 +640,52 @@ public class TextConverterFrame extends JFrame {
                 updateStatus("Save failed");
             }
         }
+    }
+
+    private FileNameExtensionFilter resolvePreferredFilter(
+            String preferredFormat,
+            FileNameExtensionFilter txtFilter,
+            FileNameExtensionFilter taggedTxtFilter,
+            FileNameExtensionFilter pdfFilter,
+            FileNameExtensionFilter wordFilter,
+            FileNameExtensionFilter htmlFilter,
+            FileNameExtensionFilter jsonFilter,
+            FileNameExtensionFilter rtfFilter,
+            FileNameExtensionFilter mdFilter
+    ) {
+        if ("PDF".equalsIgnoreCase(preferredFormat)) {
+            return pdfFilter;
+        }
+        if ("DOCX".equalsIgnoreCase(preferredFormat)) {
+            return wordFilter;
+        }
+        if ("HTML".equalsIgnoreCase(preferredFormat)) {
+            return htmlFilter;
+        }
+        if ("JSON".equalsIgnoreCase(preferredFormat)) {
+            return jsonFilter;
+        }
+        if ("RTF".equalsIgnoreCase(preferredFormat)) {
+            return rtfFilter;
+        }
+        if ("MD".equalsIgnoreCase(preferredFormat)) {
+            return mdFilter;
+        }
+        if ("TAGGED_TXT".equalsIgnoreCase(preferredFormat)) {
+            return taggedTxtFilter;
+        }
+        return txtFilter;
+    }
+
+    private void saveHistoryExport(String markdownText, String convertedText, File target, String format) {
+        historyDAO.insertConversion(
+                markdownText,
+                convertedText,
+                String.valueOf(formatCombo.getSelectedItem()),
+                target.getAbsolutePath(),
+                format
+        );
+        savedLocationLabel.setText("Last saved: " + target.getAbsolutePath());
     }
 
     private File ensureExtension(File file, String extension) {
@@ -497,6 +710,10 @@ public class TextConverterFrame extends JFrame {
         quickCopyEnabled = record.getConvertedText() != null && !record.getConvertedText().isBlank();
         if (record.getExportPath() != null && !record.getExportPath().isBlank()) {
             savedLocationLabel.setText("Last saved: " + record.getExportPath());
+            File parent = new File(record.getExportPath()).getParentFile();
+            if (parent != null) {
+                lastSaveDirectory = parent;
+            }
         }
         updateCountsAndTags();
         updateStatus("Loaded conversion #" + record.getId());
@@ -542,35 +759,163 @@ public class TextConverterFrame extends JFrame {
         return text == null ? 0 : text.length();
     }
 
-    private void stylePrimaryConvertButton(JButton convertButton) {
-        convertButton.setPreferredSize(new Dimension(188, 44));
-        convertButton.setFont(new Font("Segoe UI", Font.BOLD, 15));
-        convertButton.setForeground(Color.WHITE);
-        convertButton.setBackground(new Color(38, 128, 255));
-        convertButton.setOpaque(true);
-        convertButton.setBorder(BorderFactory.createLineBorder(new Color(71, 154, 255), 1, true));
-        convertButton.setFocusPainted(false);
+    private void addActionButton(JButton button) {
+        actionButtons.add(button);
     }
 
-    private void styleActionButton(JButton button) {
+    private void styleActionButton(JButton button, UiTheme theme) {
         button.setFont(new Font("Segoe UI", Font.PLAIN, 13));
-        button.setForeground(TEXT_PRIMARY);
-        button.setBackground(new Color(34, 44, 62));
+        button.setForeground(theme.textPrimary);
+        button.setBackground(theme.buttonBg);
         button.setOpaque(true);
-        button.setBorder(BorderFactory.createLineBorder(new Color(70, 85, 116), 1, true));
+        button.setBorder(BorderFactory.createLineBorder(theme.buttonBorder, 1, true));
         button.setFocusPainted(false);
     }
 
-    private void styleComboBox(JComboBox<String> comboBox) {
+    private void styleComboBox(JComboBox<String> comboBox, UiTheme theme) {
         comboBox.setFont(new Font("Segoe UI", Font.PLAIN, 13));
-        comboBox.setBackground(new Color(29, 39, 56));
-        comboBox.setForeground(TEXT_PRIMARY);
+        comboBox.setBackground(theme.inputBg);
+        comboBox.setForeground(theme.textPrimary);
         comboBox.setFocusable(false);
     }
 
-    private void setMutedText(JLabel label) {
-        label.setForeground(TEXT_MUTED);
+    private void setMutedText(JLabel label, UiTheme theme) {
+        label.setForeground(theme.textMuted);
         label.setFont(label.getFont().deriveFont(Font.PLAIN, 12f));
+    }
+
+    private void openLastSaveFolder() {
+        if (!Desktop.isDesktopSupported()) {
+            JOptionPane.showMessageDialog(this, "Desktop open is not supported on this system.", "Unsupported", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        if (lastSaveDirectory == null || !lastSaveDirectory.exists()) {
+            JOptionPane.showMessageDialog(this, "No saved folder available yet.", "Not Available", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        try {
+            Desktop.getDesktop().open(lastSaveDirectory);
+        } catch (IOException ex) {
+            JOptionPane.showMessageDialog(this, "Failed to open folder:\n" + ex.getMessage(), "Open Failed", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void openSettingsDialog() {
+        JComboBox<String> uiThemeSelect = new JComboBox<>(new String[]{"Dark", "Light", "Steel"});
+        uiThemeSelect.setSelectedItem(currentUiTheme.label);
+
+        JComboBox<String> exportThemeSelect = new JComboBox<>(new String[]{"Blue", "Classic", "Dark"});
+        exportThemeSelect.setSelectedItem(exportThemeCombo.getSelectedItem());
+
+        JCheckBox historyOnCopyCheck = new JCheckBox("Save copied output to history", saveHistoryOnCopy);
+        JCheckBox wrapOutputCheck = new JCheckBox("Wrap output text", outputWrapEnabled);
+        JSpinner debounceMs = new JSpinner(new SpinnerNumberModel(debounceTimer.getDelay(), 100, 2000, 50));
+
+        JPanel panel = new JPanel(new GridLayout(0, 2, 8, 8));
+        panel.add(new JLabel("App UI Theme"));
+        panel.add(uiThemeSelect);
+        panel.add(new JLabel("Default Export Theme"));
+        panel.add(exportThemeSelect);
+        panel.add(new JLabel("Live Preview Delay (ms)"));
+        panel.add(debounceMs);
+        panel.add(historyOnCopyCheck);
+        panel.add(new JLabel(""));
+        panel.add(wrapOutputCheck);
+        panel.add(new JLabel(""));
+
+        int result = JOptionPane.showConfirmDialog(this, panel, "Settings", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (result == JOptionPane.OK_OPTION) {
+            currentUiTheme = UiTheme.fromLabel(String.valueOf(uiThemeSelect.getSelectedItem()));
+            applyUiTheme(currentUiTheme);
+            exportThemeCombo.setSelectedItem(exportThemeSelect.getSelectedItem());
+            saveHistoryOnCopy = historyOnCopyCheck.isSelected();
+            outputWrapEnabled = wrapOutputCheck.isSelected();
+            outputArea.setLineWrap(outputWrapEnabled);
+            outputArea.setWrapStyleWord(outputWrapEnabled);
+            debounceTimer.setDelay((Integer) debounceMs.getValue());
+            updateStatus("Settings updated");
+        }
+    }
+
+    private void applyUiTheme(UiTheme theme) {
+        getContentPane().setBackground(theme.appBg);
+        topBar.setBackground(theme.appBg);
+        buttonBar.setBackground(theme.appBg);
+        bottomBar.setBackground(theme.appBg);
+        statusPanel.setBackground(theme.appBg);
+        leftActionsPanel.setBackground(theme.appBg);
+        rightActionsPanel.setBackground(theme.appBg);
+
+        inputPanel.setBackground(theme.panelBg);
+        outputPanel.setBackground(theme.panelBg);
+        inputCounterPanel.setBackground(theme.panelBg);
+        outputCounterPanel.setBackground(theme.panelBg);
+
+        inputArea.setBackground(theme.inputBg);
+        outputArea.setBackground(theme.outputBg);
+        inputArea.setForeground(theme.textPrimary);
+        outputArea.setForeground(theme.textPrimary);
+        inputArea.setCaretColor(theme.accent);
+        outputArea.setCaretColor(theme.accent);
+
+        inputPanel.setBorder(createPanelBorder("Markdown Input", theme));
+        outputPanel.setBorder(createPanelBorder("Converted Output", theme));
+
+        for (JButton button : actionButtons) {
+            styleActionButton(button, theme);
+        }
+        styleComboBox(formatCombo, theme);
+        styleComboBox(exportThemeCombo, theme);
+
+        statusLabel.setForeground(theme.textPrimary);
+        statusLabel.setFont(statusLabel.getFont().deriveFont(Font.BOLD, 12f));
+        setMutedText(savedLocationLabel, theme);
+        setMutedText(tagSummaryLabel, theme);
+        setMutedText(inputCountLabel, theme);
+        setMutedText(outputCountLabel, theme);
+
+        if (getJMenuBar() != null) {
+            styleMenuBar(getJMenuBar(), theme);
+        }
+        repaint();
+    }
+
+    private void styleMenuBar(JMenuBar menuBar, UiTheme theme) {
+        menuBar.setBackground(theme.appBg);
+        menuBar.setForeground(theme.textPrimary);
+        for (int i = 0; i < menuBar.getMenuCount(); i++) {
+            JMenu menu = menuBar.getMenu(i);
+            if (menu != null) {
+                styleMenu(menu, theme);
+            }
+        }
+    }
+
+    private void styleMenu(JMenu menu, UiTheme theme) {
+        menu.setForeground(theme.textPrimary);
+        menu.setBackground(theme.panelBg);
+        for (int i = 0; i < menu.getItemCount(); i++) {
+            JMenuItem item = menu.getItem(i);
+            if (item == null) {
+                continue;
+            }
+            item.setForeground(theme.textPrimary);
+            item.setBackground(theme.panelBg);
+            if (item instanceof JMenu subMenu) {
+                styleMenu(subMenu, theme);
+            }
+        }
+    }
+
+    private TitledBorder createPanelBorder(String title, UiTheme theme) {
+        TitledBorder titledBorder = BorderFactory.createTitledBorder(new LineBorder(theme.border, 1, true), title);
+        titledBorder.setTitleColor(theme.textPrimary);
+        titledBorder.setTitleFont(new Font("Segoe UI", Font.BOLD, 13));
+        return titledBorder;
+    }
+
+    private FileExporter.ExportTheme selectedExportTheme() {
+        return FileExporter.ExportTheme.fromLabel(String.valueOf(exportThemeCombo.getSelectedItem()));
     }
 
     private Font pickEditorFont() {

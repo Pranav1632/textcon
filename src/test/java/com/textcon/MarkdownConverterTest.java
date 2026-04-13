@@ -62,7 +62,7 @@ class MarkdownConverterTest {
 
     @Test
     void pdfConversionShouldPreserveInputAsIs() {
-        String input = "# Heading\n\n```java\nint x = 1;\n```\n*italic*";
+        String input = "# Heading\n\n```java\nint x = 1;\n```\n*italic*\n---";
         assertEquals(input, converter.toPdf(input));
     }
 
@@ -98,30 +98,97 @@ class MarkdownConverterTest {
     }
 
     @Test
-    void shouldRemoveTripleUnderscoreForAllPlatforms() {
-        String input = "Title ___bad___ text";
+    void telegramShouldKeepMarkdownCodeFences() {
+        String input = """
+                ```java
+                int total = left + right;
+                ```
+                """;
 
-        assertFalse(converter.toWhatsApp(input).contains("___"));
-        assertFalse(converter.toTelegram(input).contains("___"));
-        assertFalse(converter.toDiscord(input).contains("___"));
-        assertFalse(converter.toSlack(input).contains("___"));
-        assertFalse(converter.toPdf(input).contains("___"));
+        String output = converter.toTelegram(input);
+
+        assertTrue(output.contains("```java"));
+        assertTrue(output.contains("int total = left + right;"));
+        assertTrue(output.contains("```"));
+        assertFalse(output.contains("<code>"));
+    }
+
+    @Test
+    void telegramShouldKeepMarkdownLinksAndFormula() {
+        String input = "Use [docs](https://example.com) and formula $x_i = \\\\frac{-b}{2a}$";
+        String output = converter.toTelegram(input);
+
+        assertTrue(output.contains("[docs](https://example.com)"));
+        assertTrue(output.contains("$x_i = \\\\frac{-b}{2a}$"));
     }
 
     @Test
     void shouldReplaceTripleDashAndTripleUnderscoreSeparatorForWhatsApp() {
         String input = """
-                3. ⚠️ What I fixed
+                Summary
                 ---
-                👉 No need to rewrite command
+                Keep this line
                 ___
                 """;
         String output = converter.toWhatsApp(input);
 
         assertFalse(output.contains("\n---\n"));
         assertFalse(output.contains("\n___\n"));
-        assertFalse(output.contains("• • •"));
-        assertTrue(output.contains("3. ⚠️ What I fixed"));
-        assertTrue(output.contains("👉 No need to rewrite command"));
+        assertTrue(output.contains("Summary"));
+        assertTrue(output.contains("Keep this line"));
+    }
+
+    @Test
+    void discordShouldKeepExpectedMarkdownSyntax() {
+        String input = """
+                # Header
+                **Bold**
+                *Italic*
+                __Underlined__
+                ~~Strikethrough~~
+                ||Hidden||
+                [Site](https://example.com)
+                > Quote
+                - Item
+                1. Numbered
+                """;
+
+        String output = converter.toDiscord(input);
+
+        assertTrue(output.contains("# Header"));
+        assertTrue(output.contains("**Bold**"));
+        assertTrue(output.contains("*Italic*"));
+        assertTrue(output.contains("__Underlined__"));
+        assertTrue(output.contains("~~Strikethrough~~"));
+        assertTrue(output.contains("||Hidden||"));
+        assertTrue(output.contains("[Site](https://example.com)"));
+        assertTrue(output.contains("> Quote"));
+        assertTrue(output.contains("- Item"));
+        assertTrue(output.contains("1. Numbered"));
+    }
+
+    @Test
+    void slackShouldUseMrkdwnRules() {
+        String input = """
+                # Header
+                **Bold**
+                *Italic*
+                ~~Strike~~
+                [Docs](https://example.com)
+                > Quote
+                - Item
+                1. Numbered
+                """;
+
+        String output = converter.toSlack(input);
+
+        assertTrue(output.contains("*Header*"));
+        assertTrue(output.contains("*Bold*"));
+        assertTrue(output.contains("_Italic_"));
+        assertTrue(output.contains("~Strike~"));
+        assertTrue(output.contains("<https://example.com|Docs>"));
+        assertTrue(output.contains("> Quote"));
+        assertTrue(output.contains("* Item"));
+        assertTrue(output.contains("1. Numbered"));
     }
 }

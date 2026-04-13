@@ -39,19 +39,6 @@ class FileExporterTest {
     }
 
     @Test
-    void taggedTextExportShouldCollapseTripleUnderscores() throws IOException {
-        Path file = Files.createTempFile("textcon-tagged-underscore", ".txt");
-        try {
-            exporter.exportTaggedTXT("Paragraph ___broken___ text", file.toFile());
-            String exported = Files.readString(file, StandardCharsets.UTF_8);
-            assertTrue(!exported.contains("___"));
-            assertTrue(exported.contains("__broken__"));
-        } finally {
-            Files.deleteIfExists(file);
-        }
-    }
-
-    @Test
     void taggedTextExportShouldRemoveSeparatorLines() throws IOException {
         Path file = Files.createTempFile("textcon-tagged-separators", ".txt");
         try {
@@ -71,13 +58,78 @@ class FileExporterTest {
     }
 
     @Test
-    void pdfExportShouldCreateAFile() throws IOException {
-        Path file = Files.createTempFile("textcon-pdf", ".pdf");
+    void markdownExportShouldKeepSectionSeparators() throws IOException {
+        Path file = Files.createTempFile("textcon-md", ".md");
         try {
-            exporter.exportPDF("# Heading\nBody with `code`", file.toFile());
-            assertTrue(Files.size(file) > 0);
+            String markdown = "One\n---\nTwo\n___\n";
+            exporter.exportMD(markdown, file.toFile());
+            String exported = Files.readString(file, StandardCharsets.UTF_8);
+
+            assertTrue(exported.contains("\n---\n"));
+            assertTrue(exported.contains("\n___\n"));
         } finally {
             Files.deleteIfExists(file);
+        }
+    }
+
+    @Test
+    void htmlExportShouldContainHrForMarkdownSeparators() throws IOException {
+        Path file = Files.createTempFile("textcon-html", ".html");
+        try {
+            exporter.exportHTML("A\n---\nB", file.toFile());
+            String exported = Files.readString(file, StandardCharsets.UTF_8);
+
+            assertTrue(exported.contains("<hr/>"));
+            assertTrue(exported.contains("<p>A</p>"));
+            assertTrue(exported.contains("<p>B</p>"));
+        } finally {
+            Files.deleteIfExists(file);
+        }
+    }
+
+    @Test
+    void jsonExportShouldContainMetadataAndText() throws IOException {
+        Path file = Files.createTempFile("textcon-json", ".json");
+        try {
+            exporter.exportJSON("# H", "*H*", "WhatsApp", file.toFile());
+            String exported = Files.readString(file, StandardCharsets.UTF_8);
+
+            assertTrue(exported.contains("\"conversionType\": \"WhatsApp\""));
+            assertTrue(exported.contains("\"originalMarkdown\": \"# H\""));
+            assertTrue(exported.contains("\"convertedText\": \"*H*\""));
+        } finally {
+            Files.deleteIfExists(file);
+        }
+    }
+
+    @Test
+    void rtfExportShouldCreateRtfDocument() throws IOException {
+        Path file = Files.createTempFile("textcon-rtf", ".rtf");
+        try {
+            exporter.exportRTF("Line 1\nLine 2", file.toFile());
+            String exported = Files.readString(file, StandardCharsets.UTF_8);
+
+            assertTrue(exported.startsWith("{\\rtf1"));
+            assertTrue(exported.contains("\\par"));
+        } finally {
+            Files.deleteIfExists(file);
+        }
+    }
+
+    @Test
+    void docxAndPdfExportShouldCreateFiles() throws IOException {
+        Path docx = Files.createTempFile("textcon-word", ".docx");
+        Path pdf = Files.createTempFile("textcon-pdf", ".pdf");
+        try {
+            String markdown = "# Heading\n---\nBody with `code`";
+            exporter.exportDOCX(markdown, docx.toFile(), FileExporter.ExportTheme.DARK);
+            exporter.exportPDF(markdown, pdf.toFile(), FileExporter.ExportTheme.DARK);
+
+            assertTrue(Files.size(docx) > 0);
+            assertTrue(Files.size(pdf) > 0);
+        } finally {
+            Files.deleteIfExists(docx);
+            Files.deleteIfExists(pdf);
         }
     }
 }

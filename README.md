@@ -8,10 +8,13 @@ Desktop app to convert Markdown into chat-platform-ready text for WhatsApp, Tele
 
 - Split-pane UI with Markdown input and converted output
 - Format switcher for WhatsApp, Telegram, Discord, and Slack
-- Convert, Copy, Clear, and Save actions
+- Auto live conversion (no manual Convert button)
+- Copy, Clear, Save As, and one-click Save As PDF/Word/HTML actions
 - File menu (Open/Save) and history viewer dialog
+- Settings menu with app theme, export theme, preview delay, and history-on-copy toggle
+- Tools menu for quick history save and operational actions
 - SQLite-backed conversion history with delete and clear actions
-- TXT and PDF export support
+- TXT, tagged TXT, PDF, Word (DOCX), HTML, JSON, RTF, and Markdown export support
 - Real-time conversion preview with 300ms debounce
 - Character counts and Markdown tag detection summary
 - Undo/Redo and keyboard shortcuts
@@ -46,6 +49,8 @@ Desktop app to convert Markdown into chat-platform-ready text for WhatsApp, Tele
 ```powershell
 java -jar target\TextConverter.jar
 ```
+
+The packaged JAR includes `Enable-Native-Access: ALL-UNNAMED` in the manifest to avoid the sqlite native-access warning on recent JDKs.
 
 ## IntelliJ Setup
 
