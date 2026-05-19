@@ -12,7 +12,7 @@ import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JTable;
 import javax.swing.ListSelectionModel;
-import javax.swing.SwingUtilities;
+import javax.swing.SwingWorker;
 import javax.swing.table.DefaultTableModel;
 import java.awt.BorderLayout;
 import java.awt.Color;
@@ -36,6 +36,9 @@ public class HistoryDialog extends JDialog {
     private final HistorySelectionListener selectionListener;
     private final DefaultTableModel tableModel;
     private final JTable table;
+    private JButton openSavedButton;
+    private JButton deleteButton;
+    private JButton clearAllButton;
     private List<ConversionRecord> rows = new ArrayList<>();
     private static final Color PANEL_BG = new Color(24, 30, 42);
     private static final Color TABLE_BG = new Color(21, 27, 38);
@@ -105,9 +108,9 @@ public class HistoryDialog extends JDialog {
     private JPanel buildActionPanel() {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
 
-        JButton openSavedButton = new JButton("Open Saved File");
-        JButton deleteButton = new JButton("Delete");
-        JButton clearAllButton = new JButton("Clear All");
+        openSavedButton = new JButton("Open Saved File");
+        deleteButton = new JButton("Delete");
+        clearAllButton = new JButton("Clear All");
         JButton closeButton = new JButton("Close");
 
         openSavedButton.addActionListener(e -> openSavedFile());
@@ -130,8 +133,30 @@ public class HistoryDialog extends JDialog {
         }
 
         ConversionRecord record = rows.get(selected);
-        historyDAO.deleteById(record.getId());
-        loadRows();
+        setBusy(true, "Deleting...");
+        new SwingWorker<Void, Void>() {
+            @Override
+            protected Void doInBackground() {
+                historyDAO.deleteById(record.getId());
+                return null;
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    get();
+                    loadRows();
+                } catch (Exception ex) {
+                    setBusy(false, "Delete failed");
+                    JOptionPane.showMessageDialog(
+                            HistoryDialog.this,
+                            rootMessage(ex),
+                            "Delete Failed",
+                            JOptionPane.ERROR_MESSAGE
+                    );
+                }
+            }
+        }.execute();
     }
 
     private void clearAllRows() {
@@ -143,26 +168,68 @@ public class HistoryDialog extends JDialog {
         );
 
         if (choice == JOptionPane.YES_OPTION) {
-            historyDAO.clearAll();
-            loadRows();
+            setBusy(true, "Clearing...");
+            new SwingWorker<Void, Void>() {
+                @Override
+                protected Void doInBackground() {
+                    historyDAO.clearAll();
+                    return null;
+                }
+
+                @Override
+                protected void done() {
+                    try {
+                        get();
+                        loadRows();
+                    } catch (Exception ex) {
+                        setBusy(false, "Clear failed");
+                        JOptionPane.showMessageDialog(
+                                HistoryDialog.this,
+                                rootMessage(ex),
+                                "Clear Failed",
+                                JOptionPane.ERROR_MESSAGE
+                        );
+                    }
+                }
+            }.execute();
         }
     }
 
     private void loadRows() {
-        SwingUtilities.invokeLater(() -> {
-            rows = historyDAO.getAll();
-            tableModel.setRowCount(0);
-            for (ConversionRecord row : rows) {
-                tableModel.addRow(new Object[]{
-                        row.getId(),
-                        row.getConversionType(),
-                        row.getExportFormat() == null ? "-" : row.getExportFormat(),
-                        row.getExportPath() == null ? "-" : row.getExportPath(),
-                        preview(row.getConvertedText()),
-                        row.getCreatedAt()
-                });
+        setBusy(true, "Loading history...");
+        new SwingWorker<List<ConversionRecord>, Void>() {
+            @Override
+            protected List<ConversionRecord> doInBackground() {
+                return historyDAO.getAll();
             }
-        });
+
+            @Override
+            protected void done() {
+                try {
+                    rows = get();
+                    tableModel.setRowCount(0);
+                    for (ConversionRecord row : rows) {
+                        tableModel.addRow(new Object[]{
+                                row.getId(),
+                                row.getConversionType(),
+                                row.getExportFormat() == null ? "-" : row.getExportFormat(),
+                                row.getExportPath() == null ? "-" : row.getExportPath(),
+                                preview(row.getConvertedText()),
+                                row.getCreatedAt()
+                        });
+                    }
+                    setBusy(false, "Conversion History");
+                } catch (Exception ex) {
+                    setBusy(false, "History load failed");
+                    JOptionPane.showMessageDialog(
+                            HistoryDialog.this,
+                            rootMessage(ex),
+                            "History Load Failed",
+                            JOptionPane.ERROR_MESSAGE
+                    );
+                }
+            }
+        }.execute();
     }
 
     private void openSavedFile() {
@@ -215,5 +282,31 @@ public class HistoryDialog extends JDialog {
             return clean;
         }
         return clean.substring(0, 40) + "...";
+    }
+
+    private void setBusy(boolean busy, String title) {
+        table.setEnabled(!busy);
+        if (openSavedButton != null) {
+            openSavedButton.setEnabled(!busy);
+        }
+        if (deleteButton != null) {
+            deleteButton.setEnabled(!busy);
+        }
+        if (clearAllButton != null) {
+            clearAllButton.setEnabled(!busy);
+        }
+        setTitle(title);
+    }
+
+    private String rootMessage(Throwable throwable) {
+        Throwable current = throwable;
+        while (current.getCause() != null) {
+            current = current.getCause();
+        }
+        String message = current.getMessage();
+        if (message == null || message.isBlank()) {
+            return current.toString();
+        }
+        return message;
     }
 }

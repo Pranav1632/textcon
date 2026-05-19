@@ -23,6 +23,7 @@ import javax.swing.JMenuBar;
 import javax.swing.JMenuItem;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
+import javax.swing.JProgressBar;
 import javax.swing.JRadioButtonMenuItem;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
@@ -30,6 +31,7 @@ import javax.swing.JSpinner;
 import javax.swing.JTextArea;
 import javax.swing.KeyStroke;
 import javax.swing.SpinnerNumberModel;
+import javax.swing.SwingWorker;
 import javax.swing.Timer;
 import javax.swing.border.LineBorder;
 import javax.swing.border.TitledBorder;
@@ -58,6 +60,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.CancellationException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -124,10 +128,12 @@ public class TextConverterFrame extends JFrame {
     private final JLabel tagSummaryLabel = new JLabel("Found: 0 headings, 0 bold, 0 italic, 0 code blocks");
     private final JLabel statusLabel = new JLabel("Ready");
     private final JLabel savedLocationLabel = new JLabel("Last saved: -");
+    private final JProgressBar busyProgressBar = new JProgressBar();
 
     private final MarkdownConverter converter = new MarkdownConverter();
     private final HistoryDAO historyDAO = new HistoryDAO();
     private final FileExporter exporter = new FileExporter();
+    private final AppPreferences appPreferences = new AppPreferences();
     private final UndoManager undoManager = new UndoManager();
     private final Timer debounceTimer;
 
@@ -149,6 +155,11 @@ public class TextConverterFrame extends JFrame {
     private boolean outputWrapEnabled = true;
     private UiTheme currentUiTheme = UiTheme.DARK;
     private File lastSaveDirectory = new File(System.getProperty("user.home"));
+    private int previewDelayMs = 300;
+    private String defaultExportTheme = "Blue";
+    private SwingWorker<ConversionResult, Void> conversionWorker;
+    private long conversionRequestId;
+    private int busyTaskCount;
 
     public TextConverterFrame() {
         super("Markdown Text Converter");
@@ -157,7 +168,9 @@ public class TextConverterFrame extends JFrame {
         setMinimumSize(new Dimension(940, 600));
         setLocationRelativeTo(null);
 
-        debounceTimer = new Timer(300, e -> performConversion());
+        loadStoredSettings();
+
+        debounceTimer = new Timer(previewDelayMs, e -> performConversion());
         debounceTimer.setRepeats(false);
 
         initComponents();
@@ -167,6 +180,7 @@ public class TextConverterFrame extends JFrame {
 
     private void initComponents() {
         setLayout(new BorderLayout(10, 10));
+        exportThemeCombo.setSelectedItem(defaultExportTheme);
         setJMenuBar(buildMenuBar());
 
         Font editorFont = pickEditorFont();
@@ -174,8 +188,8 @@ public class TextConverterFrame extends JFrame {
         outputArea.setFont(editorFont);
         inputArea.setLineWrap(true);
         inputArea.setWrapStyleWord(true);
-        outputArea.setLineWrap(true);
-        outputArea.setWrapStyleWord(true);
+        outputArea.setLineWrap(outputWrapEnabled);
+        outputArea.setWrapStyleWord(outputWrapEnabled);
         inputArea.setMargin(new Insets(10, 12, 10, 12));
         outputArea.setMargin(new Insets(10, 12, 10, 12));
         inputArea.setSelectionColor(new Color(58, 118, 214));
@@ -202,7 +216,11 @@ public class TextConverterFrame extends JFrame {
             }
         });
         formatCombo.addActionListener(e -> performConversion());
-        exportThemeCombo.addActionListener(e -> updateStatus("Export theme: " + exportThemeCombo.getSelectedItem()));
+        exportThemeCombo.addActionListener(e -> {
+            String selectedTheme = String.valueOf(exportThemeCombo.getSelectedItem());
+            appPreferences.setExportThemeLabel(selectedTheme);
+            updateStatus("Export theme: " + selectedTheme);
+        });
 
         topBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 8));
         topBar.setBorder(BorderFactory.createEmptyBorder(2, 8, 0, 8));
@@ -225,6 +243,10 @@ public class TextConverterFrame extends JFrame {
         statusPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
         statusPanel.setBorder(BorderFactory.createEmptyBorder(4, 6, 6, 6));
         statusPanel.add(statusLabel);
+        busyProgressBar.setIndeterminate(true);
+        busyProgressBar.setVisible(false);
+        busyProgressBar.setPreferredSize(new Dimension(92, 12));
+        statusPanel.add(busyProgressBar);
         statusPanel.add(savedLocationLabel);
         bottomBar.add(statusPanel, BorderLayout.SOUTH);
 
@@ -366,6 +388,7 @@ public class TextConverterFrame extends JFrame {
             themeItem.addActionListener(e -> {
                 currentUiTheme = theme;
                 applyUiTheme(theme);
+                appPreferences.setUiThemeLabel(theme.label);
                 updateStatus("App theme changed to " + theme.label);
             });
             themeGroup.add(themeItem);
@@ -376,6 +399,7 @@ public class TextConverterFrame extends JFrame {
         JCheckBoxMenuItem historyOnCopyItem = new JCheckBoxMenuItem("Save Copied Output To History", saveHistoryOnCopy);
         historyOnCopyItem.addActionListener(e -> {
             saveHistoryOnCopy = historyOnCopyItem.isSelected();
+            appPreferences.setSaveHistoryOnCopy(saveHistoryOnCopy);
             updateStatus(saveHistoryOnCopy ? "History on copy enabled" : "History on copy disabled");
         });
         settingsMenu.add(historyOnCopyItem);
@@ -462,19 +486,49 @@ public class TextConverterFrame extends JFrame {
     }
 
     private void performConversion() {
-        try {
-            String original = inputArea.getText();
-            String type = String.valueOf(formatCombo.getSelectedItem());
-            String converted = convertByType(type, original);
-            outputArea.setText(converted);
+        String original = inputArea.getText();
+        String type = String.valueOf(formatCombo.getSelectedItem());
+        long requestId = ++conversionRequestId;
 
-            updateCountsAndTags();
-            quickCopyEnabled = !converted.isBlank();
-            updateStatus("Preview updated (" + type + ")");
-        } catch (Exception ex) {
-            JOptionPane.showMessageDialog(this, ex.getMessage(), "Conversion Error", JOptionPane.ERROR_MESSAGE);
-            updateStatus("Conversion failed");
+        if (conversionWorker != null && !conversionWorker.isDone()) {
+            conversionWorker.cancel(true);
         }
+
+        beginBusy("Updating preview...");
+        conversionWorker = new SwingWorker<>() {
+            @Override
+            protected ConversionResult doInBackground() {
+                String converted = convertByType(type, original);
+                return new ConversionResult(type, converted);
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    if (requestId != conversionRequestId) {
+                        return;
+                    }
+                    ConversionResult result = get();
+                    outputArea.setText(result.convertedText);
+                    updateCountsAndTags();
+                    quickCopyEnabled = !result.convertedText.isBlank();
+                    updateStatus("Preview updated (" + result.conversionType + ")");
+                } catch (CancellationException ignored) {
+                    // Ignore canceled preview runs when newer input arrives.
+                } catch (Exception ex) {
+                    JOptionPane.showMessageDialog(
+                            TextConverterFrame.this,
+                            rootMessage(ex),
+                            "Conversion Error",
+                            JOptionPane.ERROR_MESSAGE
+                    );
+                    updateStatus("Conversion failed");
+                } finally {
+                    endBusy();
+                }
+            }
+        };
+        conversionWorker.execute();
     }
 
     private String convertByType(String type, String input) {
@@ -515,13 +569,33 @@ public class TextConverterFrame extends JFrame {
             updateStatus("No output available for history");
             return;
         }
-        try {
-            historyDAO.insertConversion(original, converted, String.valueOf(formatCombo.getSelectedItem()));
-            updateStatus(successMessage);
-        } catch (Exception ex) {
-            JOptionPane.showMessageDialog(this, ex.getMessage(), "History Save Failed", JOptionPane.ERROR_MESSAGE);
-            updateStatus("Failed to save history");
-        }
+        String conversionType = String.valueOf(formatCombo.getSelectedItem());
+        beginBusy("Saving history...");
+        new SwingWorker<Void, Void>() {
+            @Override
+            protected Void doInBackground() {
+                historyDAO.insertConversion(original, converted, conversionType);
+                return null;
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    get();
+                    updateStatus(successMessage);
+                } catch (Exception ex) {
+                    JOptionPane.showMessageDialog(
+                            TextConverterFrame.this,
+                            rootMessage(ex),
+                            "History Save Failed",
+                            JOptionPane.ERROR_MESSAGE
+                    );
+                    updateStatus("Failed to save history");
+                } finally {
+                    endBusy();
+                }
+            }
+        }.execute();
     }
 
     private void clearAll() {
@@ -539,18 +613,38 @@ public class TextConverterFrame extends JFrame {
 
         if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
             File file = chooser.getSelectedFile();
-            try {
-                if (file.getParentFile() != null) {
-                    lastSaveDirectory = file.getParentFile();
-                }
-                String text = Files.readString(file.toPath(), StandardCharsets.UTF_8);
-                inputArea.setText(text);
-                performConversion();
-                updateStatus("Loaded file: " + file.getName());
-            } catch (IOException ex) {
-                JOptionPane.showMessageDialog(this, ex.getMessage(), "Open Failed", JOptionPane.ERROR_MESSAGE);
-                updateStatus("Failed to open file");
+            if (file.getParentFile() != null) {
+                lastSaveDirectory = file.getParentFile();
+                appPreferences.setLastSaveDirectory(lastSaveDirectory.getAbsolutePath());
             }
+
+            beginBusy("Loading file...");
+            new SwingWorker<String, Void>() {
+                @Override
+                protected String doInBackground() throws IOException {
+                    return Files.readString(file.toPath(), StandardCharsets.UTF_8);
+                }
+
+                @Override
+                protected void done() {
+                    try {
+                        String text = get();
+                        inputArea.setText(text);
+                        performConversion();
+                        updateStatus("Loaded file: " + file.getName());
+                    } catch (Exception ex) {
+                        JOptionPane.showMessageDialog(
+                                TextConverterFrame.this,
+                                rootMessage(ex),
+                                "Open Failed",
+                                    JOptionPane.ERROR_MESSAGE
+                        );
+                        updateStatus("Failed to open file");
+                    } finally {
+                        endBusy();
+                    }
+                }
+            }.execute();
         }
     }
 
@@ -591,54 +685,68 @@ public class TextConverterFrame extends JFrame {
             FileNameExtensionFilter chosenFilter = (FileNameExtensionFilter) chooser.getFileFilter();
             if (selected.getParentFile() != null) {
                 lastSaveDirectory = selected.getParentFile();
+                appPreferences.setLastSaveDirectory(lastSaveDirectory.getAbsolutePath());
             }
 
-            try {
-                if (chosenFilter == pdfFilter) {
-                    File target = ensureExtension(selected, ".pdf");
-                    exporter.exportPDF(structuredSource, target, selectedExportTheme());
-                    saveHistoryExport(markdownText, convertedText, target, "PDF");
-                    updateStatus("Saved PDF: " + target.getName());
-                } else if (chosenFilter == wordFilter) {
-                    File target = ensureExtension(selected, ".docx");
-                    exporter.exportDOCX(structuredSource, target, selectedExportTheme());
-                    saveHistoryExport(markdownText, convertedText, target, "DOCX");
-                    updateStatus("Saved Word DOCX: " + target.getName());
-                } else if (chosenFilter == htmlFilter) {
-                    File target = ensureExtension(selected, ".html");
-                    exporter.exportHTML(structuredSource, target, selectedExportTheme());
-                    saveHistoryExport(markdownText, convertedText, target, "HTML");
-                    updateStatus("Saved HTML: " + target.getName());
-                } else if (chosenFilter == jsonFilter) {
-                    File target = ensureExtension(selected, ".json");
-                    exporter.exportJSON(markdownText, convertedText, String.valueOf(formatCombo.getSelectedItem()), target);
-                    saveHistoryExport(markdownText, convertedText, target, "JSON");
-                    updateStatus("Saved JSON: " + target.getName());
-                } else if (chosenFilter == rtfFilter) {
-                    File target = ensureExtension(selected, ".rtf");
-                    exporter.exportRTF(convertedText, target);
-                    saveHistoryExport(markdownText, convertedText, target, "RTF");
-                    updateStatus("Saved RTF: " + target.getName());
-                } else if (chosenFilter == mdFilter) {
-                    File target = ensureExtension(selected, ".md");
-                    exporter.exportMD(structuredSource, target);
-                    saveHistoryExport(markdownText, convertedText, target, "MD");
-                    updateStatus("Saved Markdown: " + target.getName());
-                } else if (chosenFilter == taggedTxtFilter) {
-                    File target = ensureExtension(selected, ".txt");
-                    exporter.exportTaggedTXT(structuredSource, target);
-                    saveHistoryExport(markdownText, convertedText, target, "TAGGED_TXT");
-                    updateStatus("Saved tagged TXT: " + target.getName());
-                } else {
-                    File target = ensureExtension(selected, ".txt");
-                    exporter.exportTXT(convertedText, target);
-                    saveHistoryExport(markdownText, convertedText, target, "TXT");
-                    updateStatus("Saved TXT: " + target.getName());
+            String chosenFormat = exportFormatFromFilter(chosenFilter, pdfFilter, wordFilter, htmlFilter, jsonFilter, rtfFilter, mdFilter, taggedTxtFilter);
+            String conversionType = String.valueOf(formatCombo.getSelectedItem());
+            FileExporter.ExportTheme exportTheme = selectedExportTheme();
+            beginBusy("Saving file...");
+
+            new SwingWorker<SaveResult, Void>() {
+                @Override
+                protected SaveResult doInBackground() {
+                    SaveResult result = performExport(selected, chosenFormat, structuredSource, markdownText, convertedText, conversionType, exportTheme);
+                    if (result.exportError == null) {
+                        try {
+                            historyDAO.insertConversion(markdownText, convertedText, conversionType, result.targetFile.getAbsolutePath(), chosenFormat);
+                            result.historySaved = true;
+                        } catch (Exception ex) {
+                            result.historySaved = false;
+                            result.historyError = rootMessage(ex);
+                        }
+                    }
+                    return result;
                 }
-            } catch (IOException ex) {
-                JOptionPane.showMessageDialog(this, ex.getMessage(), "Save Failed", JOptionPane.ERROR_MESSAGE);
-                updateStatus("Save failed");
-            }
+
+                @Override
+                protected void done() {
+                    try {
+                        SaveResult result = get();
+                        if (result.exportError != null) {
+                            JOptionPane.showMessageDialog(
+                                    TextConverterFrame.this,
+                                    result.exportError,
+                                    "Save Failed",
+                                    JOptionPane.ERROR_MESSAGE
+                            );
+                            updateStatus("Save failed");
+                            return;
+                        }
+
+                        savedLocationLabel.setText("Last saved: " + result.targetFile.getAbsolutePath());
+                        updateSaveStatus(formatLabelForStatus(result.format), result.targetFile, result.historySaved);
+                        if (!result.historySaved && result.historyError != null) {
+                            JOptionPane.showMessageDialog(
+                                    TextConverterFrame.this,
+                                    result.historyError,
+                                    "History Save Failed",
+                                    JOptionPane.ERROR_MESSAGE
+                            );
+                        }
+                    } catch (Exception ex) {
+                        JOptionPane.showMessageDialog(
+                                TextConverterFrame.this,
+                                rootMessage(ex),
+                                "Save Failed",
+                                JOptionPane.ERROR_MESSAGE
+                        );
+                        updateStatus("Save failed");
+                    } finally {
+                        endBusy();
+                    }
+                }
+            }.execute();
         }
     }
 
@@ -677,20 +785,9 @@ public class TextConverterFrame extends JFrame {
         return txtFilter;
     }
 
-    private void saveHistoryExport(String markdownText, String convertedText, File target, String format) {
-        historyDAO.insertConversion(
-                markdownText,
-                convertedText,
-                String.valueOf(formatCombo.getSelectedItem()),
-                target.getAbsolutePath(),
-                format
-        );
-        savedLocationLabel.setText("Last saved: " + target.getAbsolutePath());
-    }
-
     private File ensureExtension(File file, String extension) {
         String path = file.getAbsolutePath();
-        if (path.toLowerCase().endsWith(extension)) {
+        if (path.toLowerCase(Locale.ROOT).endsWith(extension)) {
             return file;
         }
         return new File(path + extension);
@@ -713,6 +810,7 @@ public class TextConverterFrame extends JFrame {
             File parent = new File(record.getExportPath()).getParentFile();
             if (parent != null) {
                 lastSaveDirectory = parent;
+                appPreferences.setLastSaveDirectory(lastSaveDirectory.getAbsolutePath());
             }
         }
         updateCountsAndTags();
@@ -832,7 +930,9 @@ public class TextConverterFrame extends JFrame {
             outputWrapEnabled = wrapOutputCheck.isSelected();
             outputArea.setLineWrap(outputWrapEnabled);
             outputArea.setWrapStyleWord(outputWrapEnabled);
-            debounceTimer.setDelay((Integer) debounceMs.getValue());
+            previewDelayMs = (Integer) debounceMs.getValue();
+            debounceTimer.setDelay(previewDelayMs);
+            persistCurrentSettings();
             updateStatus("Settings updated");
         }
     }
@@ -869,6 +969,9 @@ public class TextConverterFrame extends JFrame {
 
         statusLabel.setForeground(theme.textPrimary);
         statusLabel.setFont(statusLabel.getFont().deriveFont(Font.BOLD, 12f));
+        busyProgressBar.setForeground(theme.accent);
+        busyProgressBar.setBackground(theme.panelBg);
+        busyProgressBar.setBorder(BorderFactory.createLineBorder(theme.border, 1, true));
         setMutedText(savedLocationLabel, theme);
         setMutedText(tagSummaryLabel, theme);
         setMutedText(inputCountLabel, theme);
@@ -941,6 +1044,178 @@ public class TextConverterFrame extends JFrame {
         inputArea.requestFocusInWindow();
         inputArea.setCaretPosition(inputArea.getText().length());
         updateStatus("Converted output copied back into input");
+    }
+
+    private void loadStoredSettings() {
+        currentUiTheme = UiTheme.fromLabel(appPreferences.getUiThemeLabel(currentUiTheme.label));
+        defaultExportTheme = appPreferences.getExportThemeLabel(defaultExportTheme);
+        saveHistoryOnCopy = appPreferences.isSaveHistoryOnCopy(saveHistoryOnCopy);
+        outputWrapEnabled = appPreferences.isOutputWrapEnabled(outputWrapEnabled);
+        previewDelayMs = appPreferences.getPreviewDelayMs(previewDelayMs);
+
+        String defaultPath = lastSaveDirectory.getAbsolutePath();
+        String configuredPath = appPreferences.getLastSaveDirectory(defaultPath);
+        File configuredDirectory = new File(configuredPath);
+        if (configuredDirectory.isDirectory()) {
+            lastSaveDirectory = configuredDirectory;
+        }
+    }
+
+    private void persistCurrentSettings() {
+        appPreferences.setUiThemeLabel(currentUiTheme.label);
+        appPreferences.setExportThemeLabel(String.valueOf(exportThemeCombo.getSelectedItem()));
+        appPreferences.setSaveHistoryOnCopy(saveHistoryOnCopy);
+        appPreferences.setOutputWrapEnabled(outputWrapEnabled);
+        appPreferences.setPreviewDelayMs(previewDelayMs);
+        appPreferences.setLastSaveDirectory(lastSaveDirectory.getAbsolutePath());
+    }
+
+    private void updateSaveStatus(String formatLabel, File target, boolean historySaved) {
+        String status = "Saved " + formatLabel + ": " + target.getName();
+        if (!historySaved) {
+            status += " (history unavailable)";
+        }
+        updateStatus(status);
+    }
+
+    private void beginBusy(String message) {
+        busyTaskCount++;
+        busyProgressBar.setVisible(true);
+        updateStatus(message);
+    }
+
+    private void endBusy() {
+        if (busyTaskCount > 0) {
+            busyTaskCount--;
+        }
+        if (busyTaskCount == 0) {
+            busyProgressBar.setVisible(false);
+        }
+    }
+
+    private String exportFormatFromFilter(
+            FileNameExtensionFilter chosenFilter,
+            FileNameExtensionFilter pdfFilter,
+            FileNameExtensionFilter wordFilter,
+            FileNameExtensionFilter htmlFilter,
+            FileNameExtensionFilter jsonFilter,
+            FileNameExtensionFilter rtfFilter,
+            FileNameExtensionFilter mdFilter,
+            FileNameExtensionFilter taggedTxtFilter
+    ) {
+        if (chosenFilter == pdfFilter) {
+            return "PDF";
+        }
+        if (chosenFilter == wordFilter) {
+            return "DOCX";
+        }
+        if (chosenFilter == htmlFilter) {
+            return "HTML";
+        }
+        if (chosenFilter == jsonFilter) {
+            return "JSON";
+        }
+        if (chosenFilter == rtfFilter) {
+            return "RTF";
+        }
+        if (chosenFilter == mdFilter) {
+            return "MD";
+        }
+        if (chosenFilter == taggedTxtFilter) {
+            return "TAGGED_TXT";
+        }
+        return "TXT";
+    }
+
+    private SaveResult performExport(
+            File selected,
+            String format,
+            String structuredSource,
+            String markdownText,
+            String convertedText,
+            String conversionType,
+            FileExporter.ExportTheme exportTheme
+    ) {
+        SaveResult result = new SaveResult();
+        result.format = format;
+        try {
+            switch (format) {
+                case "PDF" -> {
+                    result.targetFile = ensureExtension(selected, ".pdf");
+                    exporter.exportPDF(structuredSource, result.targetFile, exportTheme);
+                }
+                case "DOCX" -> {
+                    result.targetFile = ensureExtension(selected, ".docx");
+                    exporter.exportDOCX(structuredSource, result.targetFile, exportTheme);
+                }
+                case "HTML" -> {
+                    result.targetFile = ensureExtension(selected, ".html");
+                    exporter.exportHTML(structuredSource, result.targetFile, exportTheme);
+                }
+                case "JSON" -> {
+                    result.targetFile = ensureExtension(selected, ".json");
+                    exporter.exportJSON(markdownText, convertedText, conversionType, result.targetFile);
+                }
+                case "RTF" -> {
+                    result.targetFile = ensureExtension(selected, ".rtf");
+                    exporter.exportRTF(convertedText, result.targetFile);
+                }
+                case "MD" -> {
+                    result.targetFile = ensureExtension(selected, ".md");
+                    exporter.exportMD(structuredSource, result.targetFile);
+                }
+                case "TAGGED_TXT" -> {
+                    result.targetFile = ensureExtension(selected, ".txt");
+                    exporter.exportTaggedTXT(structuredSource, result.targetFile);
+                }
+                default -> {
+                    result.targetFile = ensureExtension(selected, ".txt");
+                    exporter.exportTXT(convertedText, result.targetFile);
+                }
+            }
+        } catch (IOException ex) {
+            result.exportError = rootMessage(ex);
+        }
+        return result;
+    }
+
+    private String formatLabelForStatus(String format) {
+        return switch (format) {
+            case "DOCX" -> "Word DOCX";
+            case "MD" -> "Markdown";
+            case "TAGGED_TXT" -> "tagged TXT";
+            default -> format;
+        };
+    }
+
+    private String rootMessage(Throwable throwable) {
+        Throwable current = throwable;
+        while (current.getCause() != null) {
+            current = current.getCause();
+        }
+        String message = current.getMessage();
+        if (message == null || message.isBlank()) {
+            return current.toString();
+        }
+        return message;
+    }
+
+    private static final class SaveResult {
+        private File targetFile;
+        private String format;
+        private boolean historySaved;
+        private String historyError;
+        private String exportError;
+    }
+
+    private static final class ConversionResult {
+        private final String conversionType;
+        private final String convertedText;
+
+        private ConversionResult(String conversionType, String convertedText) {
+            this.conversionType = conversionType;
+            this.convertedText = convertedText;
+        }
     }
 
     private void updateStatus(String message) {

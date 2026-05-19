@@ -1,12 +1,16 @@
 package com.textcon.db;
 
+import com.textcon.util.AppPaths;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
 
 public final class DBConnection {
-    private static final String DEFAULT_DB_FILE = "textcon.db";
     private static final String CREATE_TABLE_SQL = """
             CREATE TABLE IF NOT EXISTS conversion_history (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,8 +34,7 @@ public final class DBConnection {
 
     public static synchronized DBConnection getInstance() {
         if (instance == null) {
-            String dbPath = System.getProperty("textcon.db.path", DEFAULT_DB_FILE);
-            instance = new DBConnection("jdbc:sqlite:" + dbPath);
+            instance = new DBConnection("jdbc:sqlite:" + resolveDbPath());
         }
         return instance;
     }
@@ -49,6 +52,33 @@ public final class DBConnection {
             statement.execute(CREATE_TABLE_SQL);
         } catch (SQLException ex) {
             throw new IllegalStateException("Failed to initialize SQLite database", ex);
+        }
+    }
+
+    private static Path resolveDbPath() {
+        String configuredPath = System.getProperty("textcon.db.path");
+        if (configuredPath != null && !configuredPath.isBlank()) {
+            Path dbPath = Path.of(configuredPath).toAbsolutePath().normalize();
+            tryCreateParentDirectory(dbPath);
+            return dbPath;
+        }
+
+        try {
+            return AppPaths.resolveDatabasePath().toAbsolutePath().normalize();
+        } catch (IOException ex) {
+            throw new IllegalStateException("Failed to prepare application data directory", ex);
+        }
+    }
+
+    private static void tryCreateParentDirectory(Path dbPath) {
+        Path parent = dbPath.getParent();
+        if (parent == null) {
+            return;
+        }
+        try {
+            Files.createDirectories(parent);
+        } catch (IOException ex) {
+            throw new IllegalStateException("Failed to create database directory: " + parent, ex);
         }
     }
 }

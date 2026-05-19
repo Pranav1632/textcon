@@ -2,6 +2,8 @@
 
 Desktop app to convert Markdown into chat-platform-ready text for WhatsApp, Telegram, Discord, and Slack.
 
+> Current target platform: **Windows 10/11 only**.
+
 ![Screenshot Placeholder](docs/screenshot-placeholder.png)
 
 ## Features
@@ -52,6 +54,56 @@ java -jar target\TextConverter.jar
 
 The packaged JAR includes `Enable-Native-Access: ALL-UNNAMED` in the manifest to avoid the sqlite native-access warning on recent JDKs.
 
+## Create Windows Desktop App (Installer)
+
+1. Install **JDK 17+** (with `jpackage`).
+2. For `msi`/`exe` output, install **WiX Toolset** and ensure it is on `PATH`.
+3. Run the packaging script from project root:
+
+```powershell
+.\scripts\package-windows.ps1 -Type msi
+```
+
+Alternative package types:
+
+```powershell
+.\scripts\package-windows.ps1 -Type exe
+.\scripts\package-windows.ps1 -Type app-image
+.\scripts\package-windows.ps1 -Type all
+```
+
+Generated files are written to:
+
+```text
+dist\
+```
+
+Useful options:
+
+```powershell
+.\scripts\package-windows.ps1 -Type msi -AppVersion 1.2.0
+.\scripts\package-windows.ps1 -Type all -OutputDir release
+.\scripts\package-windows.ps1 -Type exe -SkipTests
+.\scripts\package-windows.ps1 -Type msi -IconPath "D:\icons\textcon.ico"
+```
+
+### Raw jpackage command (manual)
+
+```powershell
+.\mvnw.cmd clean package
+jpackage --type msi --name TextCon --input target --main-jar TextConverter.jar --main-class com.textcon.Main --dest dist --app-version 1.0.0 --vendor "TextCon" --description "Markdown text converter desktop app" --win-menu --win-shortcut --win-dir-chooser --win-per-user-install --java-options "--enable-native-access=ALL-UNNAMED"
+```
+
+## Manual Steps You Still Need
+
+1. Install and maintain toolchain on your release machine:
+   - JDK 17+ with `jpackage`
+   - WiX Toolset for `msi` and `exe`
+2. Provide a production app icon (`.ico`) if you want branded installer/shortcut visuals.
+3. Test installer on clean Windows 10 and Windows 11 machines (install, launch, uninstall, upgrade).
+4. For public distribution, code-sign the generated `.exe`/`.msi` using your certificate.
+5. Keep versioning discipline: update `pom.xml` version before each release (or pass `-AppVersion`).
+
 ## IntelliJ Setup
 
 1. Open `D:\project\textcon` as a project.
@@ -88,6 +140,8 @@ CREATE TABLE IF NOT EXISTS conversion_history (
   original_text TEXT,
   converted_text TEXT,
   conversion_type VARCHAR(50),
+  export_path TEXT,
+  export_format VARCHAR(20),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
